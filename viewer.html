@@ -3,7 +3,11 @@
   import * as zarr from "https://cdn.jsdelivr.net/npm/zarrita/+esm";
 //   const store = new zarr.FetchStore("https://raw.githubusercontent.com/zarr-developers/zarr_implementations/5dc998ac72/examples/zarr.zr/blosc");
   const store = new zarr.FetchStore("https://thevro.github.io/zarr_test/A01_ethene.zarr/");
-  const root = await zarr.open.v3(store, { kind: "group" });
+//   const root = await zarr.open.v3(store, { kind: "group" });
+  const root = zarr.root(store);
+  const energy = await zarr.open.v3(root.resolve("energy"), { kind: "array" });
+  console.log('energy.shape = ' + energy.shape)
+
   // {
   //   store: FetchStore,
   //   path: "/",
