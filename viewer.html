@@ -6,7 +6,17 @@
 //   const root = await zarr.open.v3(store, { kind: "group" });
   const root = zarr.root(store);
   const energy = await zarr.open.v3(root.resolve("energy"), { kind: "array" });
-  console.log('energy.shape = ' + energy.shape)
+//   console.log('energy.shape = ' + energy.shape) 
+//   const chunk0 = await energy.getChunk([0]);
+const energy_region = await zarr.get(energy, [0, zarr.slice(43180)]);
+// const energy_chunk = await energy_region.getChunk([0, 0]);
+
+  const time = await zarr.open.v3(root.resolve("time"), { kind: "array" });
+  const time_chunk = await time.getChunk([0]);
+
+  const atraj = await zarr.open.v3(root.resolve("atrajectory"), { kind: "array" });
+  const atraj_chunk = await atraj.getChunk([0]);
+
 
   // {
   //   store: FetchStore,
