@@ -13,28 +13,38 @@
   <script type="module">
     import * as zarr from "https://cdn.jsdelivr.net/npm/zarrita/+esm";
 
-    async function init(trajid) {
-      let path = 'http://127.0.0.1:8000/2025-07-12_animate/butene/'
-      // console.log("init() started")
-      let xyz = await get_xyz(path, trajid);
+    var root;
+    var trajids;
+    var path = 'http://127.0.0.1:8000/2025-07-12_animate/butene/';
+    var running = 0;
+    
+    const plot = Bokeh.Plotting.figure({output_backend: 'webgl'});
+    var source;
+    
+    const e_plot = Bokeh.Plotting.figure({output_backend: 'webgl'});
+    var sources;
 
-      let viewer = $3Dmol.viewers[0]
-      viewer.addModelsAsFrames(xyz, 'xyz')// { multimodel: true })
-      viewer.setStyle({ stick: { showNonBonded: true } });
-      await viewer.setFrame(0)
-      viewer.zoomTo();
-      viewer.render();
-
-      /*$3Dmol.get('traj.xyz', function (data) {
-        viewer.addModelsAsFrames(data, "xyz");
-        viewer.setStyle({ stick: { showNonBonded: true } });
-        viewer.zoomTo();
-        viewer.render();
-      });*/
-
-      //   console.log("init() finished")
+    async function init() {
+      const store = new zarr.FetchStore(path);
+      root = zarr.root(store);
+      trajids = (await zarr.get(await zarr.open.v3(root.resolve('trajid')))).data
+      let trajid = trajids[0];
+      await setup_3dmol(trajid);
     }
     window.init = init;
+
+    async function setup_3dmol(trajid) {
+      
+      let xyz = await get_xyz(path, trajid);
+
+      let viewer = $3Dmol.viewers[0];
+      viewer.removeAllModels();
+      viewer.addModelsAsFrames(xyz, 'xyz'); // { multimodel: true })
+      viewer.setStyle({ stick: { showNonBonded: true } });
+      await viewer.setFrame(0);
+      viewer.zoomTo();
+      viewer.render();
+    }
 
     async function get_xyz(path, trajid) {
       const atnum2symbol = new Map([
@@ -65,9 +75,9 @@
       ]);
       const store = new zarr.FetchStore(path);
       const root = zarr.root(store);
-      let {start, n_steps} = await get_indices(path, trajid)
+      let {first, last, n_steps} = await get_indices(path, trajid)
       const data = await zarr.open.v3(root.resolve('atXYZ'), { kind: "array" });
-      const atXYZ = await zarr.get(data, [null, null, zarr.slice(start, start+n_steps)])
+      const atXYZ = await zarr.get(data, [null, null, zarr.slice(first, first+n_steps)])
       const atNums = await zarr.get(await zarr.open.v3(root.resolve('atNums'), { kind: "array" }));
       let n_atoms = atXYZ.shape[0]
       let atNames = new Array(n_atoms)
@@ -100,11 +110,10 @@
     async function get_indices(path, trajid) {
       const store = new zarr.FetchStore(path);
       const root = zarr.root(store);
-      const ids = await zarr.get(await zarr.open.v3(root.resolve('trajid')))
-      const start = ids.data.indexOf(BigInt(trajid))
-      const last = ids.data.lastIndexOf(BigInt(trajid))
-      const n_steps = last-start+1
-      return{start, n_steps}
+      const first = trajids.indexOf(BigInt(trajid))
+      const last = trajids.lastIndexOf(BigInt(trajid))
+      const n_steps = last-first+1
+      return{first, last, n_steps}
     }
 
     function sleep(ms) {
@@ -112,82 +121,86 @@
       return new Promise(resolve => setTimeout(resolve, ms));
     }
     
-    async function animate_frames(trajid) {
-      let path = 'http://127.0.0.1:8000/2025-07-12_animate/butene/'
-      let source = await setup_plot(path);
-      let {states, sources, n_steps} = await setup_e_plot(trajid, path);
-
-      let viewer = $3Dmol.viewers[0];
-      for (let i = 0; i < n_steps; i++) {
-        document.getElementById("fnum").innerHTML = i;
-        await viewer.setFrame(i);
-        viewer.render();
-        source.selected.indices = [i];
-        sources[parseInt(states[i])-1].selected.indices = [i];
-        await sleep(1);
-        /*
-        if (states[i] == 1) {
-          source1.selected.indices = [i];
-        } else if (states[i] == 2) {
-          source2.selected.indices = [i];
-        } else if (states[i] == 3) {
-          source3.selected.indices = [i];
+    async function animate_frames() {
+      running++;
+      let trajid = document.getElementById('trajid').value;
+      if (trajids.includes(BigInt(trajid))) {
+        document.getElementById("error").innerHTML = '';
+        await setup_3dmol(trajid)
+        let {first, last, n_steps} = await get_indices(path, trajid)
+        let source = await setup_plot(trajid, path);
+        let {states, sources} = await setup_e_plot(trajid, path);
+        let viewer = $3Dmol.viewers[0];
+        for (let i = 0; i < n_steps; i++) {
+          if (running>1) break;
+          document.getElementById("fnum").innerHTML = i;
+          await viewer.setFrame(i);
+          viewer.render();
+          source.selected.indices = [i];
+          sources[parseInt(states[i])-1].selected.indices = [i];
+          await sleep(1);
         }
-        await sleep(1);
-        */
+      } else {
+        document.getElementById("error").innerHTML = 'Trajectory does not exist';
       }
-      
+      running--;
     }
     window.animate_frames = animate_frames;
-    
 
-
-    async function setup_plot(path) {
-      const store = new zarr.FetchStore(path);
-      const root = zarr.root(store);
+    async function setup_plot(trajid, path) {
+      if (typeof source !== 'undefined') {
+        source.data = {x:[], y:[]};
+        source.change.emit();
+      };
+      let {first, last, n_steps} = await get_indices(path, trajid)
       const pca1 = (await zarr.get(await zarr.open.v3(root.resolve('PCA1'), { kind: "array" }))).data;
       const pca2 = (await zarr.get(await zarr.open.v3(root.resolve('PCA2'), { kind: "array" }))).data;
-      const data = await zarr.get(await zarr.open.v3(root.resolve('PCA'), { kind: "array" }));
-      console.log(data)
-      const trajid = (await zarr.get(await zarr.open.v3(root.resolve('trajid')))).data;
-      console.log(trajid)
+      const pca1_true = pca1.slice(first, first+n_steps);
+      const pca2_true = pca2.slice(first, first+n_steps);
+
       /*
       let data = await fetch("data.json")
         .then(resp => resp.json())
       console.log(data)
       */
-      const source = new Bokeh.ColumnDataSource({ data: {'pca1': pca1, 'pca2': pca2} });
-      const plot = Bokeh.Plotting.figure({});
+      source = new Bokeh.ColumnDataSource({ data: {'pca1': pca1, 'pca2': pca2} });
       plot.scatter(
         { field: 'pca1' },
         { field: 'pca2' },
-        { source: source, selection_color: 'red' }
+        { source: source, selection_color: '' }
+      );
+      source.selected.indices = [0];
+      
+      let source_true = new Bokeh.ColumnDataSource({ data: {'pca1': pca1_true, 'pca2': pca2_true} });
+      plot.scatter(
+        { field: 'pca1' },
+        { field: 'pca2' },
+        { source: source_true, selection_color: 'red' }
       );
       Bokeh.Plotting.show(plot);
-      return source
+      return source_true
     }
-    
 
     async function setup_e_plot(trajid, path) {
-      const store = new zarr.FetchStore(path);
-      const root = zarr.root(store);
+      if (typeof sources !== 'undefined') {
+        sources.forEach(function(source) {
+          source.data = {x: [], y: []}
+          source.change.emit()
+        })
+      };
+      
       const num_s = await zarr.get(await zarr.open.v3(root.resolve('state_types'), { kind: "array" }));
-      let n_states = 0
+      let n_states = 0;
       for (let i = 0; i < num_s.data.length; i++) {
         n_states += num_s.data[i]
       }
-      const ids = await zarr.get(await zarr.open.v3(root.resolve('trajid')))
-      const first = ids.data.indexOf(BigInt(trajid))
-      const last = ids.data.lastIndexOf(BigInt(trajid))
-      const n_steps = last-first+1
-      const t = await zarr.get(await zarr.open.v3(root.resolve('time')), [zarr.slice(first, last)])
-      const time = t.data
-      const s = await zarr.get(await zarr.open.v3(root.resolve('astate')), [zarr.slice(first, last)])
-      const states = s.data
+      let {first, last, n_steps} = await get_indices(path, trajid);
+      const time = (await zarr.get(await zarr.open.v3(root.resolve('time')), [zarr.slice(first, first+n_steps)])).data
+      const states = (await zarr.get(await zarr.open.v3(root.resolve('astate')), [zarr.slice(first, first+n_steps)])).data
       const e = await zarr.get(await zarr.open.v3(root.resolve('energy')))
       let energy = []
       for (let i=0; i<n_states; i++) {
-        let offset = ids.data.length*i
+        let offset = trajids.length*i
         energy.push(e.data.slice(offset+first, offset+last))
       }
       /*
@@ -201,27 +214,31 @@
       const time = data.coords.time.data.slice(first, last)
       const states = data.data_vars.astate.data.slice(first, last);
       */
-
-      const sources = Array(n_states);
-      const plot = Bokeh.Plotting.figure({});
+      
+      sources = Array(n_states);
+      //const plot = Bokeh.Plotting.figure({});
       for (let i = 0; i < n_states; i++) {
-        //console.log(energy[i]); 
         sources[i] = new Bokeh.ColumnDataSource({ data: {x: time, y: energy[i]} });
-        plot.scatter(
+        e_plot.line(
           { field: 'x' },
           { field: 'y' },
-          { source: sources[i], selection_color: 'red' }
+          { source: sources[i], line_width: 3, alpha: 1, nonselection_alpha: 0.5 }
         );
-        Bokeh.Plotting.show(plot);
+        e_plot.scatter(
+          { field: 'x' },
+          { field: 'y' },
+          { source: sources[i], selection_color: 'red', nonselection_alpha: 0 }
+        );
+        Bokeh.Plotting.show(e_plot);
       }
 
-      return {states, sources, n_steps}
+      return {states, sources}
     }
     
   </script>
 </head>
 
-<body onload="init(3)" id="page-top" class="index">
+<body onload="init()" id="page-top" class="index">
   <div class="col-lg-6 text-center">
     <div style="position:relative;
     height: 415px;
@@ -229,7 +246,10 @@
     data-ui='true'>
   </div>
   <p id="fnum">Frame number</p>
-  <button onclick="animate_frames(3)">Start Animation</button>
+  <p>Trajectory number:</p>
+  <input type='text' id='trajid'/>
+  <button onclick="animate_frames()">Start Animation</button>
+  <p id='error'></p>
 </div>
 </body>
 
