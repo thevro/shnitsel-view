@@ -11,6 +11,12 @@
   <script type="text/javascript" src="https://cdn.bokeh.org/bokeh/release/bokeh-mathjax-3.7.3.min.js"></script>
   <script type="text/javascript" src="https://cdn.bokeh.org/bokeh/release/bokeh-api-3.7.3.min.js"></script>
   <script type="module">
+    // todo
+    //
+    // setup first trajectory on load
+    // load new trajectory on tap in pca plot
+    // separate loading and animation
+    // input to swap molecules
     import * as zarr from "https://cdn.jsdelivr.net/npm/zarrita/+esm";
 
     var root;
@@ -19,11 +25,13 @@
     var running = 0;
     
     const plot = Bokeh.Plotting.figure({output_backend: 'webgl'});
+    var id_source;
     var source;
     
     const e_plot = Bokeh.Plotting.figure({output_backend: 'webgl'});
     var sources;
     var hop_source;
+    var frame_slider;
 
     async function init() {
       const store = new zarr.FetchStore(path);
@@ -31,8 +39,25 @@
       trajids = (await zarr.get(await zarr.open.v3(root.resolve('trajid')))).data
       let trajid = trajids[0];
       await setup_3dmol(trajid);
+      setup_slider();
     }
     window.init = init;
+
+    function setup_slider() {
+
+      frame_slider = new Bokeh.Models.Slider({
+        title: 'Frame',
+        value: 0,
+        start: 0,
+        end: 0,
+        step: 1,
+        width: 600
+      });
+
+      const doc = new Bokeh.Document();
+      doc.add_root(frame_slider);
+      Bokeh.embed.add_document_standalone(doc, document.getElementById('slider'))
+    }
 
     async function setup_3dmol(trajid) {
       
@@ -105,6 +130,7 @@
           xyz += `${atNames[j]}${formatted(x).padStart(13)} ${formatted(y).padStart(13)} ${formatted(z).padStart(13)}\n`
         }
       }
+      
       return xyz.trim()
     }
 
@@ -123,17 +149,24 @@
     }
 
     async function animate_frames() {
+      // todo
+      //
+      // last frame in e_plot out of range?
+      // mistake/inconsistency in first, last, n_steps
       running++;
       let trajid = document.getElementById('trajid').value;
       if (trajids.includes(BigInt(trajid))) {
         document.getElementById("error").innerHTML = '';
         await setup_3dmol(trajid)
         let {first, last, n_steps} = await get_indices(path, trajid)
-        let source = await setup_plot(trajid, path);
-        unlock_axes(e_plot)
+        let {source, id_source} = await setup_plot(trajid, path);
+        reset_axes(plot);
+        reset_axes(e_plot);
         let {states, sources, hop_source} = await setup_e_plot(trajid, path);
         let viewer = $3Dmol.viewers[0];
         var state;
+        const n_states = sources.length;
+        frame_slider.end = n_steps-1;
 
         for (let i = 0; i < n_steps; i++) {
           if (running>1) break;
@@ -152,19 +185,51 @@
           viewer.render();
           source.selected.indices = [i];
           sources[state].selected.indices = [i];
+          frame_slider.value = i;
           await sleep(1);
         }
+
+        // hop_source.selected.change.connect(() => {
+        //   let idx = hop_source.selected.indices[0];
+        //   if (typeof idx !== 'undefined') {
+        //     let frame = hop_source.data.frame[idx];
+        //     state = parseInt(states[idx])-1;
+        //     document.getElementById("fnum").innerHTML = frame;
+        //     viewer.setFrame(frame);
+        //     frame_slider.value = frame;
+        //     viewer.render();
+        //   };
+        // });
 
         hop_source.selected.change.connect(() => {
           let idx = hop_source.selected.indices[0];
           if (typeof idx !== 'undefined') {
             let frame = hop_source.data.frame[idx];
-            state = parseInt(states[idx])-1;
-            document.getElementById("fnum").innerHTML = frame;
-            viewer.setFrame(frame);
-            viewer.render();
+            frame_slider.value = frame;
           };
         });
+
+        frame_slider.properties.value.change.connect(() => {
+          let frame = frame_slider.value;
+          let state = parseInt(states[frame])-1;
+          
+          document.getElementById("fnum").innerHTML = frame;
+          source.selected.indices = [frame];
+          for (let i=0; i<n_states; i++) {
+            sources[i].selected.indices = [];
+          }
+          sources[state].selected.indices = [frame];
+          viewer.setFrame(frame);
+          viewer.render();
+        });
+
+        id_source.selected.change.connect(() => {
+          let idx = id_source.selected.indices[0];
+          if (typeof idx !== 'undefined') {
+            var trajid = id_source.data.ids[idx];
+            document.getElementById('trajid').value = trajid;
+          };
+        })
 
       } else {
         document.getElementById("error").innerHTML = 'Trajectory does not exist';
@@ -174,40 +239,75 @@
     window.animate_frames = animate_frames;
 
     async function setup_plot(trajid, path) {
+      // todo
+      //
       // clean second source
       // add gradient
+      //
+      // add separate plot nad hovertool without tooltip but with callback
+      // -> highlight trajectory 
 
-      if (typeof source !== 'undefined') {
+      if (typeof id_source !== 'undefined') {
+        id_source.data = {x:[], y:[]};
+        id_source.change.emit();
+        
         source.data = {x:[], y:[]};
         source.change.emit();
+
+        plot.toolbar.tools = plot.toolbar.tools.slice(0,-2);
+        console.log(plot.toolbar.tools)
       };
+
       let {first, last, n_steps} = await get_indices(path, trajid)
       const pca1 = (await zarr.get(await zarr.open.v3(root.resolve('PCA1'), { kind: "array" }))).data;
       const pca2 = (await zarr.get(await zarr.open.v3(root.resolve('PCA2'), { kind: "array" }))).data;
       const pca1_true = pca1.slice(first, first+n_steps);
       const pca2_true = pca2.slice(first, first+n_steps);
+      const ids = (await zarr.get(await zarr.open.v3(root.resolve('trajid'), { kind: "array" }))).data;
 
       /*
       let data = await fetch("data.json")
         .then(resp => resp.json())
       console.log(data)
       */
-      source = new Bokeh.ColumnDataSource({ data: {'pca1': pca1, 'pca2': pca2} });
-      plot.scatter(
+      id_source = new Bokeh.ColumnDataSource({ data: {'pca1': pca1, 'pca2': pca2, 'ids': ids} });
+      // other trajectories
+      let renderer = plot.circle(
         { field: 'pca1' },
         { field: 'pca2' },
-        { source: source, selection_color: '' }
+        0.002, // radius
+        { source: id_source, selection_color: '', alpha: 0.1, selection_alpha: 0.1, hit_dilation: 2 }
       );
-      source.selected.indices = [0];
+      id_source.selected.indices = [0];
       
-      let source_true = new Bokeh.ColumnDataSource({ data: {'pca1': pca1_true, 'pca2': pca2_true} });
+      source = new Bokeh.ColumnDataSource({ data: {'pca1': pca1_true, 'pca2': pca2_true} });
+      // animated trajectory
       plot.scatter(
         { field: 'pca1' },
         { field: 'pca2' },
-        { source: source_true, selection_color: 'red' }
+        { source: source, color: 'purple', selection_color: '', nonselection_alpha: 1, size: 2 }
       );
+
+      // selected frame
+      plot.scatter(
+        { field: 'pca1' },
+        { field: 'pca2' },
+        { source: source, color: '', selection_color: 'red', nonselection_alpha: 1, size: 5 }
+      );
+
+      // set up tools
+      
+      let tap_tool = new Bokeh.TapTool({ renderers: [renderer] });
+
+      let hover_tool = new Bokeh.HoverTool({ renderers: [renderer] });
+      hover_tool.tooltips = [
+        ['trajectory', '@ids']
+      ];
+      plot.add_tools(hover_tool, tap_tool);
+      
+      
       Bokeh.Plotting.show(plot);
-      return source_true
+      return {source, id_source}
     }
 
     async function setup_e_plot(trajid, path) {
@@ -216,10 +316,11 @@
           source.data = {x: [], y: []}
           source.change.emit();
         })
-      };
-      if (typeof hop_source !== 'undefined') {
+        
         hop_source.data = {x:[], y:[]};
         hop_source.change.emit();
+
+        e_plot.toolbar.tools = e_plot.toolbar.tools.slice(0,-1);
       };
       
       const num_s = await zarr.get(await zarr.open.v3(root.resolve('state_types'), { kind: "array" }));
@@ -265,6 +366,8 @@
         sources[i].selected.indices = []
       }
 
+      // set up tap tool
+
       hop_source = new Bokeh.ColumnDataSource({data: {x: [], y: [], frame: []}})
       let renderer = e_plot.circle(
         { field: 'x' },
@@ -273,10 +376,10 @@
         { source: hop_source, color: 'red', selection_alpha: 1, nonselection_alpha: 1, hit_dilation: 1.5 }
       )
       let tap_tool = new Bokeh.TapTool({ renderers: [renderer] });
-      e_plot.add_tools(tap_tool)
+      e_plot.add_tools(tap_tool);
 
-      Bokeh.Plotting.show(e_plot)
-
+      
+      Bokeh.Plotting.show(e_plot);
       return {states, sources, hop_source}
     }
 
@@ -285,7 +388,7 @@
       fig.y_range = new Bokeh.Range1d({start: fig.y_range.start, end: fig.y_range.end});
     }
 
-    function unlock_axes(fig) {
+    function reset_axes(fig) {
       fig.x_range = new Bokeh.DataRange1d();
       fig.y_range = new Bokeh.DataRange1d();
     }
@@ -301,6 +404,7 @@
     width: 540px;" class='viewer_3Dmoljs' data-backgroundcolor='0xffffff' data-style='stick'
     data-ui='true'>
   </div>
+  <div id="slider"></div>
   <p id="fnum">Frame number</p>
   <p>Trajectory number:</p>
   <input type='text' id='trajid'/>
